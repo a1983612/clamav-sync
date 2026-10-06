@@ -16,7 +16,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11' # 升級至 Python 3.11 避免 Google SDK 警示
+          python-version: '3.11'
 
       - name: Install ClamAV Freshclam & Dependencies
         run: |
@@ -26,13 +26,55 @@ jobs:
 
       - name: Download ClamAV files using Freshclam
         run: |
-          # 建立存放目錄並賦予完整寫入權限，解決 UID 113 寫入失敗的問題
-          mkdir -p ./cvd_files
-          sudo chmod 777 ./cvd_files
-          
-          # 設定 freshclam 設定檔
-          echo "DatabaseDirectory $(pwd)/cvd_files" | sudo tee /etc/clamav/freshclam.conf
-          echo "DatabaseMirror database.clamav.net" | sudo tee -a /etc/clamav/freshclam.conf
-          
           echo "開始透過 freshclam 官方工具抓取 ClamAV 病毒碼..."
-          sudo freshclam --config-file=/etc/clamav/freshclam.conf
+          # 直接使用系統預設設定檔與預設目錄 (/var/lib/clamav)
+          sudo freshclam
+
+      - name: Upload to Google Drive
+        env:
+          GDRIVE_CREDENTIALS: ${{ secrets.GDRIVE_CREDENTIALS }}
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+        run: |
+          python -c '
+          import os, json
+          from google.oauth2.service_account import Credentials
+          from googleapiclient.discovery import build
+          from googleapiclient.http import MediaFileUpload
+
+          # 使用 freshclam 預設存放路徑
+          cvd_dir = "/var/lib/clamav"
+          files = ["daily.cvd", "main.cvd", "bytecode.cvd"]
+
+          # 1. 驗證並連線 Google Drive API
+          creds_dict = json.loads(os.environ["GDRIVE_CREDENTIALS"])
+          creds = Credentials.from_service_account_info(
+              creds_dict, 
+              scopes=["https://www.googleapis.com/auth/drive.file"]
+          )
+          service = build("drive", "v3", credentials=creds)
+          folder_id = os.environ["GDRIVE_FOLDER_ID"]
+
+          # 2. 上傳檔案至 Google Drive
+          for file_name in files:
+              file_path = os.path.join(cvd_dir, file_name)
+              if not os.path.exists(file_path):
+                  print(f"警告：未找到 {file_path}，跳過上傳。")
+                  continue
+
+              # 查詢並清理 Google Drive 上的舊檔案
+              query = f"\"{folder_id}\" in parents and name = \"{file_name}\" and trashed = false"
+              results = service.files().list(q=query, fields="files(id, name)").execute()
+              existing_files = results.get("files", [])
+              
+              for old_file in existing_files:
+                  file_id = old_file["id"]
+                  service.files().delete(fileId=file_id).execute()
+                  print(f"已清理舊檔案: {file_name} (ID: {file_id})")
+
+              # 上傳新檔
+              file_metadata = {"name": file_name, "parents": [folder_id]}
+              media = MediaFileUpload(file_path, resumable=True)
+              new_file = service.files().create(body=file_metadata, media_body=media, fields="id").execute()
+              new_id = new_file.get("id")
+              print(f"成功上傳至 Google Drive: {file_name} (ID: {new_id})")
+          '
