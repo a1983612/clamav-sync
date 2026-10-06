@@ -26,8 +26,10 @@ jobs:
 
       - name: Download ClamAV files using Freshclam
         run: |
+          echo "停止系統背景 freshclam 服務以釋放檔案鎖定..."
+          sudo systemctl stop clamav-freshclam.service || true
+          
           echo "開始透過 freshclam 官方工具抓取 ClamAV 病毒碼..."
-          # 直接使用系統預設設定檔與預設目錄 (/var/lib/clamav)
           sudo freshclam
 
       - name: Upload to Google Drive
