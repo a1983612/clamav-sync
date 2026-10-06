@@ -1,0 +1,80 @@
+name: ClamAV Daily Sync to Google Drive
+
+on:
+  schedule:
+    # 每日 UTC 18:00 (相當於台灣時間/CST 凌晨 02:00) 自動觸發
+    - cron: '0 18 * * *'
+  workflow_dispatch: # 允許在 GitHub 介面上手動測試執行
+
+jobs:
+  update-and-upload:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install cloudscraper google-api-python-client google-auth
+
+      - name: Download ClamAV files & Upload to Google Drive
+        env:
+          GDRIVE_CREDENTIALS: ${{ secrets.GDRIVE_CREDENTIALS }}
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+        run: |
+          python -c '
+          import os, json, cloudscraper
+          from google.oauth2.service_account import Credentials
+          from googleapiclient.discovery import build
+          from googleapiclient.http import MediaFileUpload
+
+          # 1. 繞過 Cloudflare 防護下載病毒碼
+          print("開始抓取 ClamAV 病毒碼...")
+          scraper = cloudscraper.create_scraper(
+              browser={"browser": "chrome", "platform": "windows", "desktop": True}
+          )
+          
+          files = ["daily.cvd", "main.cvd", "bytecode.cvd"]
+          for file_name in files:
+              url = f"https://database.clamav.net/{file_name}"
+              print(f"下載中: {file_name}...")
+              res = scraper.get(url)
+              if res.status_code == 200:
+                  with open(file_name, "wb") as f:
+                      f.write(res.content)
+                  print(f"成功下載: {file_name}")
+              else:
+                  raise Exception(f"下載 {file_name} 失敗，HTTP Status: {res.status_code}")
+
+          # 2. 驗證並連線 Google Drive API
+          creds_dict = json.loads(os.environ["GDRIVE_CREDENTIALS"])
+          creds = Credentials.from_service_account_info(
+              creds_dict, 
+              scopes=["https://www.googleapis.com/auth/drive.file"]
+          )
+          service = build("drive", "v3", credentials=creds)
+          folder_id = os.environ["GDRIVE_FOLDER_ID"]
+
+          # 3. 上傳檔案（若已存在舊檔則先清除，保持資料夾乾淨）
+          for file_name in files:
+              # 查詢舊檔案
+              query = f"\"{folder_id}\" in parents and name = \"{file_name}\" and trashed = false"
+              results = service.files().list(q=query, fields="files(id, name)").execute()
+              existing_files = results.get("files", [])
+              
+              # 刪除舊檔
+              for old_file in existing_files:
+                  service.files().delete(fileId=old_file["id"]).execute()
+                  print(f"已清理舊檔案: {file_name} (ID: {old_file[\"id\"]})")
+
+              # 上傳新檔
+              file_metadata = {"name": file_name, "parents": [folder_id]}
+              media = MediaFileUpload(file_name, resumable=True)
+              new_file = service.files().create(body=file_metadata, media_body=media, fields="id").execute()
+              print(f"成功上傳至 Google Drive: {file_name} (ID: {new_file.get(\"id\")})")
+          '
