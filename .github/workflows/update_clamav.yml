@@ -16,42 +16,39 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.11' # 升級至 Python 3.11 避免 Google SDK 警示
 
-      - name: Install dependencies
+      - name: Install ClamAV Freshclam & Dependencies
         run: |
-          pip install cloudscraper google-api-python-client google-auth
+          sudo apt-get update
+          sudo apt-get install -y clamav-freshclam
+          pip install google-api-python-client google-auth
 
-      - name: Download ClamAV files & Upload to Google Drive
+      - name: Download ClamAV files using Freshclam
+        run: |
+          # 建立存放目錄並使用官方 freshclam 下載病毒碼
+          mkdir -p ./cvd_files
+          echo "DatabaseDirectory ./cvd_files" | sudo tee /etc/clamav/freshclam.conf
+          echo "DatabaseMirror database.clamav.net" | sudo tee -a /etc/clamav/freshclam.conf
+          
+          echo "開始透過 freshclam 官方工具抓取 ClamAV 病毒碼..."
+          sudo freshclam --config-file=/etc/clamav/freshclam.conf
+
+      - name: Upload to Google Drive
         env:
           GDRIVE_CREDENTIALS: ${{ secrets.GDRIVE_CREDENTIALS }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
         run: |
           python -c '
-          import os, json, cloudscraper
+          import os, json
           from google.oauth2.service_account import Credentials
           from googleapiclient.discovery import build
           from googleapiclient.http import MediaFileUpload
 
-          # 1. 繞過 Cloudflare 防護下載病毒碼
-          print("開始抓取 ClamAV 病毒碼...")
-          scraper = cloudscraper.create_scraper(
-              browser={"browser": "chrome", "platform": "windows", "desktop": True}
-          )
-          
+          cvd_dir = "./cvd_files"
           files = ["daily.cvd", "main.cvd", "bytecode.cvd"]
-          for file_name in files:
-              url = f"https://database.clamav.net/{file_name}"
-              print(f"下載中: {file_name}...")
-              res = scraper.get(url)
-              if res.status_code == 200:
-                  with open(file_name, "wb") as f:
-                      f.write(res.content)
-                  print(f"成功下載: {file_name}")
-              else:
-                  raise Exception(f"下載 {file_name} 失敗，HTTP Status: {res.status_code}")
 
-          # 2. 驗證並連線 Google Drive API
+          # 1. 驗證並連線 Google Drive API
           creds_dict = json.loads(os.environ["GDRIVE_CREDENTIALS"])
           creds = Credentials.from_service_account_info(
               creds_dict, 
@@ -60,13 +57,18 @@ jobs:
           service = build("drive", "v3", credentials=creds)
           folder_id = os.environ["GDRIVE_FOLDER_ID"]
 
-          # 3. 上傳檔案（若已存在舊檔則先清理，保持資料夾乾淨）
+          # 2. 上傳檔案至 Google Drive
           for file_name in files:
+              file_path = os.path.join(cvd_dir, file_name)
+              if not os.path.exists(file_path):
+                  print(f"警告：未找到 {file_name}，跳過上傳。")
+                  continue
+
+              # 查詢並清理 Google Drive 上的舊檔案
               query = f"\"{folder_id}\" in parents and name = \"{file_name}\" and trashed = false"
               results = service.files().list(q=query, fields="files(id, name)").execute()
               existing_files = results.get("files", [])
               
-              # 刪除舊檔 (改用單引號避開反斜線)
               for old_file in existing_files:
                   file_id = old_file["id"]
                   service.files().delete(fileId=file_id).execute()
@@ -74,7 +76,7 @@ jobs:
 
               # 上傳新檔
               file_metadata = {"name": file_name, "parents": [folder_id]}
-              media = MediaFileUpload(file_name, resumable=True)
+              media = MediaFileUpload(file_path, resumable=True)
               new_file = service.files().create(body=file_metadata, media_body=media, fields="id").execute()
               new_id = new_file.get("id")
               print(f"成功上傳至 Google Drive: {file_name} (ID: {new_id})")
