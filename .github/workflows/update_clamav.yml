@@ -55,7 +55,7 @@ jobs:
           service = build("drive", "v3", credentials=creds)
           folder_id = os.environ["GDRIVE_FOLDER_ID"]
 
-          # 取得資料夾擁有者的 Email (即您的個人 Google 帳號 Email)
+          # 取得資料夾擁有者 Email (個人 Google 帳號)
           folder_info = service.files().get(fileId=folder_id, fields="owners").execute()
           owner_email = folder_info.get("owners", [{}])[0].get("emailAddress")
           print(f"目標資料夾擁有者 Email: {owner_email}")
@@ -67,7 +67,7 @@ jobs:
                   print(f"警告：未找到 {file_path}，跳過上傳。")
                   continue
 
-              # 查詢舊檔並刪除 (提取變數，避開 f-string 反斜線問題)
+              # 查詢舊檔並刪除
               query = f"\"{folder_id}\" in parents and name = \"{file_name}\" and trashed = false"
               results = service.files().list(q=query, fields="files(id, name)").execute()
               existing_files = results.get("files", [])
@@ -77,17 +77,12 @@ jobs:
                   service.files().delete(fileId=old_id).execute()
                   print(f"已清理舊檔案: {file_name} (ID: {old_id})")
 
-              # 上傳新檔
+              # A. 建立空的 Metadata 檔案 (0 位元組不會觸發配額限制)
               file_metadata = {"name": file_name, "parents": [folder_id]}
-              media = MediaFileUpload(file_path, resumable=True)
-              new_file = service.files().create(
-                  body=file_metadata, 
-                  media_body=media, 
-                  fields="id"
-              ).execute()
+              new_file = service.files().create(body=file_metadata, fields="id").execute()
               new_id = new_file.get("id")
 
-              # 轉移檔案擁有權給個人帳號，徹底解決 Service Account 0 MB 空間配額問題
+              # B. 立即將該空檔案的擁有權轉移給個人帳號
               if owner_email:
                   try:
                       permission = {
@@ -102,6 +97,13 @@ jobs:
                       ).execute()
                   except Exception as e:
                       print(f"轉移擁有權提示: {e}")
+
+              # C. 轉移擁有權後，將病毒碼檔案內容寫入/更新至該檔案 (此時扣除個人帳號配額)
+              media = MediaFileUpload(file_path, resumable=True)
+              service.files().update(
+                  fileId=new_id,
+                  media_body=media
+              ).execute()
 
               print(f"成功上傳至 Google Drive: {file_name} (ID: {new_id})")
           '
