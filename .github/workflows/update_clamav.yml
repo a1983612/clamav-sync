@@ -43,7 +43,6 @@ jobs:
           from googleapiclient.discovery import build
           from googleapiclient.http import MediaFileUpload
 
-          # 使用 freshclam 預設存放路徑
           cvd_dir = "/var/lib/clamav"
           files = ["daily.cvd", "main.cvd", "bytecode.cvd"]
 
@@ -51,7 +50,7 @@ jobs:
           creds_dict = json.loads(os.environ["GDRIVE_CREDENTIALS"])
           creds = Credentials.from_service_account_info(
               creds_dict, 
-              scopes=["https://www.googleapis.com/auth/drive.file"]
+              scopes=["https://www.googleapis.com/auth/drive"]
           )
           service = build("drive", "v3", credentials=creds)
           folder_id = os.environ["GDRIVE_FOLDER_ID"]
@@ -65,18 +64,28 @@ jobs:
 
               # 查詢並清理 Google Drive 上的舊檔案
               query = f"\"{folder_id}\" in parents and name = \"{file_name}\" and trashed = false"
-              results = service.files().list(q=query, fields="files(id, name)").execute()
+              results = service.files().list(
+                  q=query, 
+                  fields="files(id, name)",
+                  supportsAllDrives=True,
+                  includeItemsFromAllDrives=True
+              ).execute()
               existing_files = results.get("files", [])
               
               for old_file in existing_files:
                   file_id = old_file["id"]
-                  service.files().delete(fileId=file_id).execute()
+                  service.files().delete(fileId=file_id, supportsAllDrives=True).execute()
                   print(f"已清理舊檔案: {file_name} (ID: {file_id})")
 
-              # 上傳新檔
+              # 上傳新檔（加上 supportsAllDrives=True 避開 Service Account 配額限制）
               file_metadata = {"name": file_name, "parents": [folder_id]}
               media = MediaFileUpload(file_path, resumable=True)
-              new_file = service.files().create(body=file_metadata, media_body=media, fields="id").execute()
+              new_file = service.files().create(
+                  body=file_metadata, 
+                  media_body=media, 
+                  fields="id",
+                  supportsAllDrives=True
+              ).execute()
               new_id = new_file.get("id")
               print(f"成功上傳至 Google Drive: {file_name} (ID: {new_id})")
           '
