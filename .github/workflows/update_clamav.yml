@@ -60,21 +60,22 @@ jobs:
           service = build("drive", "v3", credentials=creds)
           folder_id = os.environ["GDRIVE_FOLDER_ID"]
 
-          # 3. 上傳檔案（若已存在舊檔則先清除，保持資料夾乾淨）
+          # 3. 上傳檔案（若已存在舊檔則先清理，保持資料夾乾淨）
           for file_name in files:
-              # 查詢舊檔案
               query = f"\"{folder_id}\" in parents and name = \"{file_name}\" and trashed = false"
               results = service.files().list(q=query, fields="files(id, name)").execute()
               existing_files = results.get("files", [])
               
-              # 刪除舊檔
+              # 刪除舊檔 (改用單引號避開反斜線)
               for old_file in existing_files:
-                  service.files().delete(fileId=old_file["id"]).execute()
-                  print(f"已清理舊檔案: {file_name} (ID: {old_file[\"id\"]})")
+                  file_id = old_file["id"]
+                  service.files().delete(fileId=file_id).execute()
+                  print(f"已清理舊檔案: {file_name} (ID: {file_id})")
 
               # 上傳新檔
               file_metadata = {"name": file_name, "parents": [folder_id]}
               media = MediaFileUpload(file_name, resumable=True)
               new_file = service.files().create(body=file_metadata, media_body=media, fields="id").execute()
-              print(f"成功上傳至 Google Drive: {file_name} (ID: {new_file.get(\"id\")})")
+              new_id = new_file.get("id")
+              print(f"成功上傳至 Google Drive: {file_name} (ID: {new_id})")
           '
