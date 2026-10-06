@@ -22,7 +22,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y clamav-freshclam
-          pip install google-api-python-client google-auth
+          pip install pydrive2 google-api-python-client google-auth
 
       - name: Download ClamAV files using Freshclam
         run: |
@@ -39,20 +39,28 @@ jobs:
         run: |
           python -c '
           import os, json
-          from google.oauth2.service_account import Credentials
-          from googleapiclient.discovery import build
-          from googleapiclient.http import MediaFileUpload
+          from pydrive2.auth import GoogleAuth
+          from pydrive2.drive import GoogleDrive
 
           cvd_dir = "/var/lib/clamav"
           files = ["daily.cvd", "main.cvd", "bytecode.cvd"]
 
-          # 1. 驗證並連線 Google Drive API
+          # 1. 解析憑證並透過 Service Account 登入
           creds_dict = json.loads(os.environ["GDRIVE_CREDENTIALS"])
-          creds = Credentials.from_service_account_info(
-              creds_dict, 
-              scopes=["https://www.googleapis.com/auth/drive"]
-          )
-          service = build("drive", "v3", credentials=creds)
+          
+          # 寫入臨時憑證檔供 PyDrive2 讀取
+          with open("client_secrets.json", "w") as f:
+              json.dump(creds_dict, f)
+
+          gauth = GoogleAuth()
+          gauth.settings = {
+              "client_config_backend": "service",
+              "service_config": {
+                  "client_json_file_path": "client_secrets.json"
+              }
+          }
+          gauth.ServiceAuth()
+          drive = GoogleDrive(gauth)
           folder_id = os.environ["GDRIVE_FOLDER_ID"]
 
           # 2. 上傳檔案至 Google Drive
@@ -62,30 +70,26 @@ jobs:
                   print(f"警告：未找到 {file_path}，跳過上傳。")
                   continue
 
-              # 查詢並清理 Google Drive 上的舊檔案
-              query = f"\"{folder_id}\" in parents and name = \"{file_name}\" and trashed = false"
-              results = service.files().list(
-                  q=query, 
-                  fields="files(id, name)",
-                  supportsAllDrives=True,
-                  includeItemsFromAllDrives=True
-              ).execute()
-              existing_files = results.get("files", [])
-              
-              for old_file in existing_files:
-                  file_id = old_file["id"]
-                  service.files().delete(fileId=file_id, supportsAllDrives=True).execute()
-                  print(f"已清理舊檔案: {file_name} (ID: {file_id})")
+              # 查詢舊檔並刪除
+              file_list = drive.ListFile({
+                  "q": f"\"{folder_id}\" in parents and title = \"{file_name}\" and trashed = false"
+              }).GetList()
 
-              # 上傳新檔（加上 supportsAllDrives=True 避開 Service Account 配額限制）
-              file_metadata = {"name": file_name, "parents": [folder_id]}
-              media = MediaFileUpload(file_path, resumable=True)
-              new_file = service.files().create(
-                  body=file_metadata, 
-                  media_body=media, 
-                  fields="id",
-                  supportsAllDrives=True
-              ).execute()
-              new_id = new_file.get("id")
-              print(f"成功上傳至 Google Drive: {file_name} (ID: {new_id})")
+              for old_file in file_list:
+                  old_file.Delete()
+                  print(f"已清理舊檔案: {file_name} (ID: {old_file[\"id\"]})")
+
+              # 上傳新檔
+              new_file = drive.CreateFile({
+                  "title": file_name,
+                  "parents": [{"id": folder_id}]
+              })
+              new_file.SetContentFile(file_path)
+              # 設定由父資料夾配額繼承，避免占用 Service Account 空間
+              new_file.Upload(param={"supportsAllDrives": True, "supportsTeamDrives": True})
+              print(f"成功上傳至 Google Drive: {file_name} (ID: {new_file[\"id\"]})")
+              
+          # 清理臨時憑證
+          if os.path.exists("client_secrets.json"):
+              os.remove("client_secrets.json")
           '
