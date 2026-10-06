@@ -22,7 +22,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y clamav-freshclam
-          pip install google-api-python-client google-auth
+          pip install google-api-python-client google-auth google-auth-oauthlib
 
       - name: Download ClamAV files using Freshclam
         run: |
@@ -34,31 +34,35 @@ jobs:
 
       - name: Upload to Google Drive
         env:
-          GDRIVE_CREDENTIALS: ${{ secrets.GDRIVE_CREDENTIALS }}
+          GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+          GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+          GDRIVE_REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
         run: |
           python -c '
-          import os, json
-          from google.oauth2.service_account import Credentials
+          import os
+          from google.oauth2.credentials import Credentials
+          from google.auth.transport.requests import Request
           from googleapiclient.discovery import build
           from googleapiclient.http import MediaFileUpload
 
           cvd_dir = "/var/lib/clamav"
           files = ["daily.cvd", "main.cvd", "bytecode.cvd"]
 
-          # 1. 驗證連線 Google Drive API
-          creds_dict = json.loads(os.environ["GDRIVE_CREDENTIALS"])
-          creds = Credentials.from_service_account_info(
-              creds_dict, 
+          # 1. 使用個人 OAuth Credentials 連線 (直接代表個人帳號身分)
+          creds = Credentials(
+              token=None,
+              refresh_token=os.environ["GDRIVE_REFRESH_TOKEN"],
+              token_uri="https://oauth2.googleapis.com/token",
+              client_id=os.environ["GDRIVE_CLIENT_ID"],
+              client_secret=os.environ["GDRIVE_CLIENT_SECRET"],
               scopes=["https://www.googleapis.com/auth/drive"]
           )
+
+          # 自動刷新 Access Token
+          creds.refresh(Request())
           service = build("drive", "v3", credentials=creds)
           folder_id = os.environ["GDRIVE_FOLDER_ID"]
-
-          # 取得資料夾擁有者 Email (個人 Google 帳號)
-          folder_info = service.files().get(fileId=folder_id, fields="owners").execute()
-          owner_email = folder_info.get("owners", [{}])[0].get("emailAddress")
-          print(f"目標資料夾擁有者 Email: {owner_email}")
 
           # 2. 上傳檔案至 Google Drive
           for file_name in files:
@@ -67,7 +71,7 @@ jobs:
                   print(f"警告：未找到 {file_path}，跳過上傳。")
                   continue
 
-              # 查詢舊檔並刪除
+              # 查詢舊檔並清理
               query = f"\"{folder_id}\" in parents and name = \"{file_name}\" and trashed = false"
               results = service.files().list(q=query, fields="files(id, name)").execute()
               existing_files = results.get("files", [])
@@ -77,33 +81,15 @@ jobs:
                   service.files().delete(fileId=old_id).execute()
                   print(f"已清理舊檔案: {file_name} (ID: {old_id})")
 
-              # A. 建立空的 Metadata 檔案 (0 位元組不會觸發配額限制)
+              # 上傳新檔 (直接以個人帳號名義建立，完全享有個人雲端空間配額)
               file_metadata = {"name": file_name, "parents": [folder_id]}
-              new_file = service.files().create(body=file_metadata, fields="id").execute()
-              new_id = new_file.get("id")
-
-              # B. 立即將該空檔案的擁有權轉移給個人帳號
-              if owner_email:
-                  try:
-                      permission = {
-                          "type": "user",
-                          "role": "owner",
-                          "emailAddress": owner_email
-                      }
-                      service.permissions().create(
-                          fileId=new_id,
-                          body=permission,
-                          transferOwnership=True
-                      ).execute()
-                  except Exception as e:
-                      print(f"轉移擁有權提示: {e}")
-
-              # C. 轉移擁有權後，將病毒碼檔案內容寫入/更新至該檔案 (此時扣除個人帳號配額)
               media = MediaFileUpload(file_path, resumable=True)
-              service.files().update(
-                  fileId=new_id,
-                  media_body=media
+              new_file = service.files().create(
+                  body=file_metadata, 
+                  media_body=media, 
+                  fields="id"
               ).execute()
+              new_id = new_file.get("id")
 
               print(f"成功上傳至 Google Drive: {file_name} (ID: {new_id})")
           '
