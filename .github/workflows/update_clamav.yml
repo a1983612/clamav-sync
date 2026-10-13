@@ -2,8 +2,8 @@ name: ClamAV Daily Sync to Google Drive
 
 on:
   schedule:
-    # 每日 UTC 16:00 (相當於台灣時間凌晨 00:00) 觸發
-    - cron: '0 16 * * *'
+    # 改為 UTC 16:23（相當於台灣時間凌晨 00:23），避開整點尖峰
+    - cron: '23 16 * * *'
   workflow_dispatch: # 允許在 GitHub 介面上手動測試執行
 
 jobs:
