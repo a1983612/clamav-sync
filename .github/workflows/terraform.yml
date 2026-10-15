@@ -7,26 +7,22 @@ jobs:
   get-token:
     runs-on: ubuntu-latest
     steps:
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install Dependencies
-        run: pip install requests
-
-      - name: Generate Auth URL
+      - name: Generate Auth Link
         env:
           GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
         run: |
-          python -c '
-          import os
-          client_id = os.environ["GDRIVE_CLIENT_ID"]
-          scope = "https://www.googleapis.com/auth/drive"
-          redirect_uri = "https://oauthplayground"
-          auth_url = f"https://accounts.google.com/o/oauth2/v2/auth?response_type=code&client_id={client_id}&redirect_uri=https://developers.google.com/oauthplayground&scope={scope}&access_type=offline&prompt=consent"
-          print("\n" + "="*50)
-          print("請複製下方網址至瀏覽器開啟並完成授權：")
-          print(auth_url)
-          print("="*50 + "\n")
-          '
+          CLIENT_ID=$(echo "${GDRIVE_CLIENT_ID}" | xargs)
+          SCOPE="https://www.googleapis.com/auth/drive"
+          REDIRECT_URI="https://developers.google.com/oauthplayground"
+          
+          if [ -z "$CLIENT_ID" ]; then
+            echo "錯誤：GDRIVE_CLIENT_ID 為空，請檢查 GitHub Secrets 設定！"
+            exit 1
+          fi
+
+          AUTH_URL="https://accounts.google.com/o/oauth2/v2/auth?response_type=code&client_id=${CLIENT_ID}&redirect_uri=${REDIRECT_URI}&scope=${SCOPE}&access_type=offline&prompt=consent"
+
+          echo "=================================================="
+          echo "請複製以下網址至瀏覽器開啟進行授權："
+          echo "$AUTH_URL"
+          echo "=================================================="
