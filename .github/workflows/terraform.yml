@@ -1,0 +1,32 @@
+name: Get Refresh Token
+
+on:
+  workflow_dispatch:
+
+jobs:
+  get-token:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: pip install requests
+
+      - name: Generate Auth URL
+        env:
+          GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+        run: |
+          python -c '
+          import os
+          client_id = os.environ["GDRIVE_CLIENT_ID"]
+          scope = "https://www.googleapis.com/auth/drive"
+          redirect_uri = "https://oauthplayground"
+          auth_url = f"https://accounts.google.com/o/oauth2/v2/auth?response_type=code&client_id={client_id}&redirect_uri=https://developers.google.com/oauthplayground&scope={scope}&access_type=offline&prompt=consent"
+          print("\n" + "="*50)
+          print("請複製下方網址至瀏覽器開啟並完成授權：")
+          print(auth_url)
+          print("="*50 + "\n")
+          '
